@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Log Monitor · Auto Update Server</title>
+  <style>
+    :root { --bg:#0f141a; --card:#171e26; --line:#273240; --text:#e6edf3; --muted:#8b98a8; --accent:#3b82f6;
+            --debug:#94a3b8; --info:#38bdf8; --warn:#fbbf24; --error:#f87171; --ok:#34d399; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:"Segoe UI","Noto Sans Thai",Tahoma,sans-serif; font-size:14px; }
+    header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:2; }
+    header h1 { font-size:17px; margin:0; }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; margin-right:6px; }
+    .dot.live { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+    .spacer { flex:1; }
+    .muted { color:var(--muted); }
+    main { padding:16px 20px 24px; }
+    .stats { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
+    .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+    .stat .k { color:var(--muted); font-size:12px; }
+    .stat .v { font-size:20px; font-weight:600; margin-top:4px; font-variant-numeric:tabular-nums; }
+    .stat .v.small { font-size:14px; font-weight:500; word-break:break-all; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+    select, input, button { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font:inherit; }
+    input[type=search] { min-width:220px; }
+    button { cursor:pointer; }
+    button:hover { border-color:var(--accent); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .wrap { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:auto; height:calc(100vh - 290px); min-height:300px; }
+    table { width:100%; border-collapse:collapse; font-family:Consolas,"Cascadia Mono",monospace; font-size:12.5px; }
+    thead th { position:sticky; top:0; background:#1d2630; text-align:left; padding:8px 10px; color:var(--muted); font-weight:500; border-bottom:1px solid var(--line); }
+    td { padding:5px 10px; border-bottom:1px solid #1f2933; vertical-align:top; }
+    td.t { white-space:nowrap; color:var(--muted); }
+    td.c { white-space:nowrap; }
+    tr.meta-row td { background:#111820; color:var(--muted); white-space:pre-wrap; word-break:break-all; }
+    tr.row { cursor:pointer; }
+    tr.row:hover td { background:#1b232d; }
+    .lv { display:inline-block; min-width:48px; text-align:center; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:600; }
+    .lv.debug { color:var(--debug); background:rgba(148,163,184,.12); }
+    .lv.info  { color:var(--info);  background:rgba(56,189,248,.12); }
+    .lv.warn  { color:var(--warn);  background:rgba(251,191,36,.12); }
+    .lv.error { color:var(--error); background:rgba(248,113,113,.14); }
+    .has-meta::after { content:" ⋯"; color:var(--muted); }
+    .empty { padding:40px; text-align:center; color:var(--muted); }
+    .files { margin-top:14px; }
+    .files a { color:var(--info); text-decoration:none; margin-right:14px; font-size:13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Log Monitor</h1>
+    <span class="muted"><span class="dot" id="liveDot"></span><span id="liveText">กำลังเชื่อมต่อ…</span></span>
+    <div class="spacer"></div>
+    <a href="/docs" target="_blank" class="muted" style="text-decoration:none">Swagger UI ↗</a>
+    <span class="muted" id="who"></span>
+    <form method="post" action="/monitor/logout" style="margin:0"><button type="submit">ออกจากระบบ</button></form>
+  </header>
+
+  <main>
+    <section class="stats" id="stats"></section>
+
+    <div class="toolbar">
+      <label class="muted">วันที่ <input type="date" id="date" /></label>
+      <select id="level" title="ระดับขั้นต่ำ">
+        <option value="">ทุกระดับ</option>
+        <option value="info">info ขึ้นไป</option>
+        <option value="warn">warn ขึ้นไป</option>
+        <option value="error">error เท่านั้น</option>
+      </select>
+      <select id="category">
+        <option value="">ทุกหมวด</option>
+        <option value="http">http</option>
+        <option value="update">update</option>
+        <option value="auth">auth</option>
+        <option value="monitor">monitor</option>
+        <option value="system">system</option>
+        <option value="server">server</option>
+        <option value="docs">docs</option>
+      </select>
+      <input type="search" id="q" placeholder="ค้นหา (IP, path, ข้อความ…)" />
+      <button id="pause">หยุดชั่วคราว</button>
+      <label class="muted"><input type="checkbox" id="autoscroll" checked /> เลื่อนตามอัตโนมัติ</label>
+      <div class="spacer"></div>
+      <span class="muted" id="count"></span>
+      <button id="reload">โหลดใหม่</button>
+    </div>
+
+    <div class="wrap" id="wrap">
+      <table>
+        <thead><tr><th style="width:150px">เวลา</th><th style="width:70px">ระดับ</th><th style="width:90px">หมวด</th><th>ข้อความ</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" style="display:none">ไม่มี log</div>
+    </div>
+
+    <div class="files muted" id="files"></div>
+  </main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const LEVELS = ['debug', 'info', 'warn', 'error'];
+  const MAX_ROWS = 3000;
+  const pad = (n) => String(n).padStart(2, '0');
+  const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+  const fmtTime = (iso) => { const d = new Date(iso); return `${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+  const fmtUptime = (s) => { const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60); return (d ? d+'ว ' : '') + h+'ชม. ' + m+'น.'; };
+  const fmtSize = (b) => b > 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(1)+' KB';
+
+  let paused = false, queue = [], es = null, rowCount = 0;
+
+  const filters = () => ({ level: $('level').value, category: $('category').value, q: $('q').value.trim(), date: $('date').value });
+  const isLiveView = () => !$('date').value || $('date').value === today();
+
+  function matches(e) {
+    const f = filters();
+    if (f.level && LEVELS.indexOf(e.level) < LEVELS.indexOf(f.level)) return false;
+    if (f.category && e.category !== f.category) return false;
+    if (f.q && !JSON.stringify(e).toLowerCase().includes(f.q.toLowerCase())) return false;
+    return true;
+  }
+
+  function addRow(e) {
+    const tbody = $('rows');
+    const tr = document.createElement('tr');
+    tr.className = 'row';
+    const td = (cls, text) => { const c = document.createElement('td'); if (cls) c.className = cls; c.textContent = text; tr.appendChild(c); return c; };
+    td('t', fmtTime(e.time));
+    const lv = document.createElement('td'); const s = document.createElement('span'); s.className = 'lv ' + e.level; s.textContent = e.level; lv.appendChild(s); tr.appendChild(lv);
+    td('c', e.category);
+    const msg = td(e.meta ? 'has-meta' : '', e.message);
+    if (e.meta) {
+      tr.addEventListener('click', () => {
+        const next = tr.nextElementSibling;
+        if (next && next.classList.contains('meta-row')) { next.remove(); return; }
+        const mr = document.createElement('tr'); mr.className = 'meta-row';
+        const c = document.createElement('td'); c.colSpan = 4; c.textContent = JSON.stringify(e.meta, null, 2);
+        mr.appendChild(c); tr.after(mr);
+      });
+    }
+    tbody.appendChild(tr);
+    rowCount++;
+    while (rowCount > MAX_ROWS) { const first = tbody.querySelector('tr.row'); if (!first) break; const n = first.nextElementSibling; if (n && n.classList.contains('meta-row')) n.remove(); first.remove(); rowCount--; }
+  }
+
+  function updateCount() {
+    $('count').textContent = rowCount.toLocaleString() + ' รายการ';
+    $('empty').style.display = rowCount ? 'none' : 'block';
+  }
+
+  function scrollBottom() { if ($('autoscroll').checked) $('wrap').scrollTop = $('wrap').scrollHeight; }
+
+  async function api(url) {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (r.status === 401) { location.href = '/monitor/login'; throw new Error('unauthorized'); }
+    return r.json();
+  }
+
+  async function loadLogs() {
+    const p = new URLSearchParams({ limit: 2000 });
+    for (const [k, v] of Object.entries(filters())) if (v) p.set(k, v);
+    const rows = await api('/monitor/api/logs?' + p);
+    $('rows').innerHTML = ''; rowCount = 0;
+    rows.forEach(addRow);
+    updateCount(); scrollBottom();
+  }
+
+  function connect() {
+    if (es) es.close();
+    es = new EventSource('/monitor/api/stream');
+    es.onopen = () => { $('liveDot').className = 'dot live'; $('liveText').textContent = paused ? 'หยุดชั่วคราว' : 'Live'; };
+    es.onerror = () => { $('liveDot').className = 'dot'; $('liveText').textContent = 'ขาดการเชื่อมต่อ กำลังลองใหม่…'; };
+    es.onmessage = (ev) => {
+      const e = JSON.parse(ev.data);
+      if (!isLiveView() || !matches(e)) return;
+      if (paused) { queue.push(e); $('pause').textContent = `ดำเนินต่อ (${queue.length})`; return; }
+      addRow(e); updateCount(); scrollBottom();
+    };
+  }
+
+  function statCard(k, v, small) { return `<div class="stat"><div class="k">${k}</div><div class="v${small ? ' small' : ''}">${v}</div></div>`; }
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+  async function loadStats() {
+    try {
+      const s = await api('/monitor/api/stats');
+      const v = s.version;
+      $('stats').innerHTML = [
+        statCard('เวอร์ชันล่าสุด', v ? esc(v.version) : '-'),
+        statCard('ทำงานมาแล้ว', fmtUptime(s.uptimeSeconds)),
+        statCard('Request ทั้งหมด', s.requests.toLocaleString()),
+        statCard('เช็คเวอร์ชัน', s.versionChecks.toLocaleString()),
+        statCard('ดาวน์โหลด', s.downloads.toLocaleString()),
+        statCard('API key ผิด', s.authFailures.toLocaleString()),
+        statCard('Error (5xx)', s.status['5xx'].toLocaleString()),
+        statCard('หน่วยความจำ', s.memoryMB.rss + ' MB'),
+        statCard('ไฟล์อัปเดต', v ? `${esc(v.file)} · ${fmtSize(v.size)}<br><span class="muted">SHA-256 ${esc(v.sha256.slice(0, 16))}…</span>` : 'ไม่พบไฟล์', true),
+        statCard('API key', s.requireApiKey ? 'บังคับใช้' : '<span style="color:var(--warn)">ปิดอยู่</span>', true),
+      ].join('');
+    } catch { /* ignore */ }
+  }
+
+  async function loadFiles() {
+    try {
+      const files = await api('/monitor/api/files');
+      $('files').innerHTML = files.length
+        ? 'ไฟล์ log: ' + files.slice(0, 31).map((f) => `<a href="/monitor/api/files/${encodeURIComponent(f.name)}">${esc(f.date)} (${fmtSize(f.size)})</a>`).join('')
+        : '';
+    } catch { /* ignore */ }
+  }
+
+  $('pause').addEventListener('click', () => {
+    paused = !paused;
+    if (!paused) { queue.forEach(addRow); queue = []; updateCount(); scrollBottom(); $('pause').textContent = 'หยุดชั่วคราว'; $('liveText').textContent = 'Live'; }
+    else { $('pause').textContent = 'ดำเนินต่อ'; $('liveText').textContent = 'หยุดชั่วคราว'; }
+  });
+  let qTimer;
+  $('q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(loadLogs, 300); });
+  ['level', 'category', 'date'].forEach((id) => $(id).addEventListener('change', loadLogs));
+  $('reload').addEventListener('click', () => { loadLogs(); loadStats(); loadFiles(); });
+
+  $('date').value = today();
+  api('/monitor/api/me').then((m) => { $('who').textContent = m.user; }).catch(() => {});
+  loadLogs(); loadStats(); loadFiles(); connect();
+  setInterval(loadStats, 5000);
+  setInterval(loadFiles, 60000);
+})();
+</script>
+</body>
+</html>
