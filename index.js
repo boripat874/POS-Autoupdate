@@ -36,10 +36,13 @@ function getLocalIp() {
   return (real || candidates[0] || { address: 'localhost' }).address;
 }
 
-// ---------- ข้อมูลเวอร์ชัน + SHA-256 (cache ตาม mtime/size ของไฟล์) ----------
+// ---------- ข้อมูลเวอร์ชัน + SHA-256 (ตามสเปก ZooPos-AutoUpdate-Spec) ----------
+// version.txt = ตัวชี้เวอร์ชันที่ปล่อยอยู่ (แก้ไฟล์นี้เป็นขั้นสุดท้าย / ถอยกลับก็แก้ไฟล์นี้)
+// ไฟล์ zip   = ZooPos-Setup-<version>.zip (ตั้งได้ด้วย UPDATE_FILE_PATTERN) ถ้าไม่พบจะใช้ update.zip
+// ไฟล์เสริม  = <zip>.sha256.txt (จาก build-installer.cmd) ใช้ตรวจว่าไฟล์ที่อัปโหลดครบ
+//            = <ชื่อ zip ไม่มี .zip>.notes.txt (ถ้ามี) จะส่งเป็น field "notes"
 const VERSION_FILE = path.join(config.updatesDir, 'version.txt');
-const UPDATE_FILE = path.join(config.updatesDir, 'update.zip');
-let hashCache = { key: '', sha256: '' };
+const hashCache = new Map(); // name -> { key, promise }
 
 function sha256File(file) {
   return new Promise((resolve, reject) => {
@@ -48,20 +51,53 @@ function sha256File(file) {
   });
 }
 
-async function getVersion() {
-  const [text, st] = await Promise.all([
-    fs.promises.readFile(VERSION_FILE, 'utf8'),
-    fs.promises.stat(UPDATE_FILE),
-  ]);
+function cachedSha256(name, file, st) {
   const key = `${st.mtimeMs}:${st.size}`;
-  if (hashCache.key !== key) hashCache = { key, sha256: await sha256File(UPDATE_FILE) };
+  const hit = hashCache.get(name);
+  if (hit && hit.key === key) return hit.promise;
+  const promise = sha256File(file);
+  promise.catch(() => hashCache.delete(name));
+  hashCache.set(name, { key, promise });
+  return promise;
+}
+
+const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
+const readOptional = (file) => fs.promises.readFile(file, 'utf8').then((t) => t.trim()).catch(() => '');
+
+async function getVersion() {
+  const version = await readOptional(VERSION_FILE);
+  if (!version) throw httpError(404, 'ไม่พบ version.txt หรือไฟล์ว่าง', 'ENOENT');
+
+  const candidates = [...new Set([config.updateFilePattern.replace('{version}', version), 'update.zip'])];
+  let name = null;
+  let st = null;
+  for (const n of candidates) {
+    try {
+      const s = await fs.promises.stat(path.join(config.updatesDir, n));
+      if (s.isFile()) { name = n; st = s; break; }
+    } catch { /* ลองชื่อถัดไป */ }
+  }
+  if (!name) throw httpError(404, `ไม่พบไฟล์อัปเดตของเวอร์ชัน ${version} (${candidates.join(', ')})`, 'ENOENT');
+
+  const file = path.join(config.updatesDir, name);
+  const sha256 = await cachedSha256(name, file, st);
+
+  // ตรวจกับไฟล์ .sha256.txt (ถ้ามี) กันกรณีอัปโหลดไม่ครบ / ไฟล์ผิดตัว
+  const sidecar = await readOptional(`${file}.sha256.txt`);
+  const expected = (sidecar.match(/\b[0-9a-f]{64}\b/i) || [])[0];
+  if (expected && expected.toLowerCase() !== sha256) {
+    throw httpError(503, `SHA-256 ของ ${name} ไม่ตรงกับ ${name}.sha256.txt (อัปโหลดไม่ครบหรือไฟล์ผิด)`, 'HASH_MISMATCH');
+  }
+
+  const notes = await readOptional(path.join(config.updatesDir, name.replace(/\.zip$/i, '') + '.notes.txt'));
   return {
-    version: text.trim(),
-    file: 'update.zip',
+    version,
+    file: name,
     size: st.size,
-    sha256: hashCache.sha256,
+    sha256,
     updatedAt: st.mtime.toISOString(),
-    downloadUrl: '/download/update.zip',
+    downloadUrl: `/download/${encodeURIComponent(name)}`,
+    ...(notes ? { notes } : {}),
   };
 }
 
@@ -106,9 +142,16 @@ app.get('/check-version', requireKey, (req, res, next) => {
 app.get('/api/version', requireKey, async (req, res, next) => {
   stats.versionChecks++;
   try {
-    res.json(await getVersion());
+    res.set('Cache-Control', 'no-store').json(await getVersion());
   } catch (err) {
-    if (err.code === 'ENOENT') return res.status(404).json({ error: 'Not found', message: 'ไม่พบไฟล์อัปเดต' });
+    if (err.code === 'ENOENT') {
+      logger.warn('update', err.message);
+      return res.status(404).json({ error: 'Not found', message: 'ไม่พบไฟล์อัปเดต' });
+    }
+    if (err.code === 'HASH_MISMATCH') {
+      logger.error('update', err.message);
+      return res.status(503).json({ error: 'Service Unavailable', message: 'ไฟล์อัปเดตบน server ไม่สมบูรณ์' });
+    }
     next(err);
   }
 });
@@ -126,7 +169,14 @@ app.use(
     });
     next();
   },
-  express.static(config.updatesDir, { index: false, dotfiles: 'ignore' }),
+  express.static(config.updatesDir, {
+    index: false,
+    dotfiles: 'ignore',
+    setHeaders: (res) => {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-store');
+    },
+  }),
 );
 
 app.use('/docs', swaggerRouter(logger));
@@ -147,8 +197,21 @@ app.use((err, req, res, next) => {
 
 // ---------- Start ----------
 const SERVER_IP = getLocalIp();
-const server = app.listen(config.port, () => {
-  const base = `http://${SERVER_IP}:${config.port}`;
+
+// HTTPS (ถ้าตั้ง HTTPS_PFX หรือ HTTPS_CERT + HTTPS_KEY) ไม่ตั้ง = HTTP
+function createServer() {
+  if (config.httpsPfx) {
+    return require('https').createServer({ pfx: fs.readFileSync(config.httpsPfx), passphrase: config.httpsPassphrase }, app);
+  }
+  if (config.httpsCert && config.httpsKey) {
+    return require('https').createServer({ cert: fs.readFileSync(config.httpsCert), key: fs.readFileSync(config.httpsKey) }, app);
+  }
+  return require('http').createServer(app);
+}
+const useHttps = Boolean(config.httpsPfx || (config.httpsCert && config.httpsKey));
+const server = createServer();
+server.listen(config.port, () => {
+  const base = `${useHttps ? 'https' : 'http'}://${SERVER_IP}:${config.port}`;
   logger.info('system', `Update Server เริ่มทำงานที่ ${base}`, { pid: process.pid, node: process.version });
   logger.info('system', `Swagger UI: ${base}/docs · Log Monitor: ${base}/monitor`);
   if (!config.requireApiKey) logger.warn('system', 'REQUIRE_API_KEY=false ทุกคนเรียก API ได้โดยไม่ต้องใช้ key');

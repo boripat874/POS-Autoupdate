@@ -12,7 +12,7 @@ const spec = {
     version: pkg.version,
     description:
       'API สำหรับให้โปรแกรม client เช็คเวอร์ชันและดาวน์โหลดไฟล์อัปเดต\n\n' +
-      'ทุก endpoint ยกเว้น `/health` ต้องส่ง API key ทาง header `x-api-key` ' +
+      'ทุก endpoint ยกเว้น `/health` ต้องส่ง API key ทาง header `X-API-KEY` ' +
       '(หรือ query `api_key`) กดปุ่ม **Authorize** ด้านขวาเพื่อใส่ key ก่อนทดลองเรียก',
   },
   servers: [{ url: '/' }],
@@ -22,20 +22,22 @@ const spec = {
   ],
   components: {
     securitySchemes: {
-      ApiKeyHeader: { type: 'apiKey', in: 'header', name: 'x-api-key' },
+      ApiKeyHeader: { type: 'apiKey', in: 'header', name: 'X-API-KEY' },
       ApiKeyQuery: { type: 'apiKey', in: 'query', name: 'api_key' },
     },
     schemas: {
       VersionInfo: {
         type: 'object',
         properties: {
-          version: { type: 'string', example: '2.0.0' },
-          file: { type: 'string', example: 'update.zip' },
-          size: { type: 'integer', example: 51901 },
-          sha256: { type: 'string', example: '3f2a...e91c' },
+          version: { type: 'string', example: '2.1.0' },
+          file: { type: 'string', example: 'ZooPos-Setup-2.1.0.zip' },
+          size: { type: 'integer', example: 85123456, description: 'ขนาดไฟล์ zip จริงบน server (bytes)' },
+          sha256: { type: 'string', example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08', description: 'SHA-256 (hex ตัวเล็ก) ของไฟล์ zip คำนวณจากไฟล์จริงทุกครั้งที่ไฟล์เปลี่ยน' },
           updatedAt: { type: 'string', format: 'date-time' },
-          downloadUrl: { type: 'string', example: '/download/update.zip' },
+          downloadUrl: { type: 'string', example: '/download/ZooPos-Setup-2.1.0.zip' },
+          notes: { type: 'string', description: 'รายละเอียดการแก้ไข (มีเมื่อมีไฟล์ <zip>.notes.txt)', example: '- แก้ปัญหาพิมพ์ใบเสร็จ' },
         },
+        required: ['version', 'sha256', 'downloadUrl', 'size'],
       },
       Health: {
         type: 'object',
@@ -82,6 +84,7 @@ const spec = {
           200: { description: 'ข้อมูลเวอร์ชัน', content: { 'application/json': { schema: { $ref: '#/components/schemas/VersionInfo' } } } },
           401: { $ref: '#/components/responses/Unauthorized' },
           404: { description: 'ไม่พบไฟล์อัปเดต' },
+          503: { description: 'ไฟล์ zip ไม่ตรงกับ .sha256.txt (อัปโหลดไม่ครบ)' },
         },
       },
     },
@@ -89,7 +92,7 @@ const spec = {
       get: {
         tags: ['Update'],
         summary: 'ดาวน์โหลดไฟล์อัปเดต',
-        parameters: [{ name: 'file', in: 'path', required: true, schema: { type: 'string', default: 'update.zip' } }],
+        parameters: [{ name: 'file', in: 'path', required: true, schema: { type: 'string', default: 'ZooPos-Setup-2.1.0.zip' } }],
         responses: {
           200: { description: 'ไฟล์', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
           401: { $ref: '#/components/responses/Unauthorized' },

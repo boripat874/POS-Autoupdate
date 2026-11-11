@@ -10,6 +10,15 @@ const config = {
   port: Number(process.env.PORT) || 80,
   updatesDir: path.join(root, 'public', 'updates'),
   logDir: process.env.LOG_DIR ? path.resolve(root, process.env.LOG_DIR) : path.join(root, 'logs'),
+  // ชื่อไฟล์ zip ของแต่ละเวอร์ชัน ({version} = ค่าใน version.txt)
+  updateFilePattern: process.env.UPDATE_FILE_PATTERN || 'ZooPos-Setup-{version}.zip',
+
+  // HTTPS: ใช้ไฟล์ .pfx (Windows) หรือ cert + key แบบ PEM ถ้าไม่ตั้งจะรันเป็น HTTP
+  httpsPfx: process.env.HTTPS_PFX ? path.resolve(root, process.env.HTTPS_PFX) : '',
+  httpsPassphrase: process.env.HTTPS_PFX_PASSPHRASE || undefined,
+  httpsCert: process.env.HTTPS_CERT ? path.resolve(root, process.env.HTTPS_CERT) : '',
+  httpsKey: process.env.HTTPS_KEY ? path.resolve(root, process.env.HTTPS_KEY) : '',
+
   logRetentionDays: Number(process.env.LOG_RETENTION_DAYS) || 30,
 
   // API key: ใส่ได้หลายตัว คั่นด้วย comma
